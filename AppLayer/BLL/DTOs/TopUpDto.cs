@@ -5,9 +5,9 @@ using System.Text;
 
 namespace BLL.DTOs
 {
-    public class LoginDto
+    public class TopUpDto
     {
-        [Required] public string Phone { get; set; } = null!;
-        [Required] public string Password { get; set; } = null!;
+        [Range(1, 100_000_000)]
+        public long AmountPaisa { get; set; }
     }
 }
