@@ -1,42 +1,31 @@
 ﻿// AppLayer/Controllers/WalletController.cs
+using AppLayer.Extensions;
+using BLL.DTOs;
 using BLL.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
 
-namespace AppLayer.Controllers;
-
-[ApiController]
-[Authorize]
-[Route("api/wallet")]
-public class WalletController : ControllerBase
+namespace AppLayer.Controllers
 {
-    private readonly IWalletService _walletService;
-
-    public WalletController(IWalletService walletService) => _walletService = walletService;
-
-    [HttpGet]
-    public async Task<IActionResult> GetBalance()
+    [ApiController]
+    [Authorize]
+    [Route("api/wallet")]
+    public class WalletController : ControllerBase
     {
-        try
-        {
-            var result = await _walletService.GetBalanceAsync(GetUserId());
-            return Ok(result);
-        }
-        catch (ArgumentException ex) { return NotFound(new { error = ex.Message }); }
-    }
+        private readonly IWalletService _wallet;
 
-    [HttpPost("topup")]
-    public async Task<IActionResult> TopUp([FromBody] long amountPaisa)
-    {
-        try
+        public WalletController(IWalletService wallet) => _wallet = wallet;
+
+        [HttpGet]
+        public async Task<IActionResult> GetBalance() =>
+            Ok(await _wallet.GetBalanceAsync(User.GetUserId()));
+
+        [HttpPost("topup")]
+        public async Task<IActionResult> TopUp(TopUpDto dto)
         {
-            await _walletService.TopUpAsync(GetUserId(), amountPaisa);
+            await _wallet.TopUpAsync(User.GetUserId(), dto.AmountPaisa);
             return NoContent();
         }
-        catch (ArgumentException ex) { return BadRequest(new { error = ex.Message }); }
     }
-
-    private Guid GetUserId() =>
-        Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 }

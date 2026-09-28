@@ -1,36 +1,35 @@
-﻿using BLL.Interfaces;
+﻿using AppLayer.Extensions;
+using BLL.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
-namespace AppLayer.Controllers;
-
-[ApiController]
-[Authorize(Roles = "Driver")]
-[Route("api/driver")]
-public class DriverController : ControllerBase
+namespace AppLayer.Controllers
 {
-    private readonly IDriverService _driverService;
-
-    public DriverController(IDriverService driverService) => _driverService = driverService;
-
-    [HttpPost("{driverId}/online")]
-    public async Task<IActionResult> GoOnline(Guid driverId)
+    [ApiController]
+    [Authorize(Roles = "Driver")]
+    [Route("api/driver")]
+    public class DriverController : ControllerBase
     {
-        try { await _driverService.GoOnlineAsync(driverId); return NoContent(); }
-        catch (ArgumentException ex) { return NotFound(new { error = ex.Message }); }
-    }
+        private readonly IDriverService _drivers;
 
-    [HttpPost("{driverId}/offline")]
-    public async Task<IActionResult> GoOffline(Guid driverId)
-    {
-        try { await _driverService.GoOfflineAsync(driverId); return NoContent(); }
-        catch (ArgumentException ex) { return NotFound(new { error = ex.Message }); }
-    }
+        public DriverController(IDriverService drivers) => _drivers = drivers;
 
-    [HttpGet("{driverId}")]
-    public async Task<IActionResult> GetProfile(Guid driverId)
-    {
-        var result = await _driverService.GetProfileAsync(driverId);
-        return result == null ? NotFound() : Ok(result);
+        [HttpPost("online")]
+        public async Task<IActionResult> GoOnline()
+        {
+            await _drivers.GoOnlineAsync(User.GetUserId());
+            return NoContent();
+        }
+
+        [HttpPost("offline")]
+        public async Task<IActionResult> GoOffline()
+        {
+            await _drivers.GoOfflineAsync(User.GetUserId());
+            return NoContent();
+        }
+
+        [HttpGet("me")]
+        public async Task<IActionResult> GetProfile() =>
+            Ok(await _drivers.GetProfileAsync(User.GetUserId()));
     }
 }

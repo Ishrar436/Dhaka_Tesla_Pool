@@ -1,34 +1,26 @@
-﻿using BLL.DTOs;
+﻿using AppLayer.Extensions;
+using BLL.DTOs;
 using BLL.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
-namespace AppLayer.Controllers;
-
-[ApiController]
-[Authorize(Roles = "Driver")]
-[Route("api/vehicles")]
-public class VehiclesController : ControllerBase
+namespace AppLayer.Controllers
 {
-    private readonly IVehicleService _vehicleService;
-
-    public VehiclesController(IVehicleService vehicleService) => _vehicleService = vehicleService;
-
-    [HttpPost("{driverId}")]
-    public async Task<IActionResult> Register(Guid driverId, CreateVehicleDto dto)
+    [ApiController]
+    [Authorize(Roles = "Driver")]
+    [Route("api/vehicles")]
+    public class VehiclesController : ControllerBase
     {
-        try
-        {
-            var result = await _vehicleService.RegisterVehicleAsync(driverId, dto);
-            return Ok(result);
-        }
-        catch (ArgumentException ex) { return BadRequest(new { error = ex.Message }); }
-    }
+        private readonly IVehicleService _vehicles;
 
-    [HttpGet("driver/{driverId}")]
-    public async Task<IActionResult> GetByDriver(Guid driverId)
-    {
-        var result = await _vehicleService.GetByDriverAsync(driverId);
-        return Ok(result);
+        public VehiclesController(IVehicleService vehicles) => _vehicles = vehicles;
+
+        [HttpPost]
+        public async Task<IActionResult> Register(CreateVehicleDto dto) =>
+            Ok(await _vehicles.RegisterVehicleAsync(User.GetUserId(), dto));
+
+        [HttpGet]
+        public async Task<IActionResult> GetMine() =>
+            Ok(await _vehicles.GetMineAsync(User.GetUserId()));
     }
 }
