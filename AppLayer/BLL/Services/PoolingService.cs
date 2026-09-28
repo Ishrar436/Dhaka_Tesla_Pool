@@ -12,80 +12,54 @@ namespace BLL.Services
     {
         private readonly IUnitOfWork _uow;
 
-        public PoolingService(IUnitOfWork uow)
-        {
-            _uow = uow;
-        }
+        public PoolingService(IUnitOfWork uow) => _uow = uow;
 
-        // Assumption (PRD Section 4): "compatible route" = same pickup zone AND same dropoff zone.
-        // Runs inside a DB transaction and re-checks capacity right before committing,
-        // so two concurrent requests can't both squeeze into the last seat.
-        public async Task<Pool> FindOrCreatePoolAsync(Guid pickupZoneId, Guid dropoffZoneId, int seatsRequested)
+        // Matching rule: a passenger joins a waiting pool that starts in the same pickup zone
+        // and still has enough free seats. Once the driver accepts, the pool is closed to newcomers.
+        public async Task<Pool> FindOrCreatePoolAsync(Guid pickupZoneId, int seatsRequested)
         {
-            await using var transaction = await _uow.BeginTransactionAsync();
-            try
+            var waitingPools = await _uow.Pools.GetWaitingPoolsAsync();
+
+            foreach (var pool in waitingPools)
             {
-                var candidatePools = (await _uow.Pools.GetAllAsync())
-                    .Where(p => p.Status == "Waiting")
+                var active = pool.RideRequests
+                    .Where(r => r.Status is not ("Cancelled" or "Completed"))
                     .ToList();
 
-                foreach (var pool in candidatePools)
-                {
-                    var requestsInPool = (await _uow.RideRequests.GetByPoolIdAsync(pool.Id)).ToList();
+                if (active.Count == 0) continue;
+                if (active.Any(r => r.Status != "Waiting")) continue;
+                if (active.Any(r => r.PickupZoneId != pickupZoneId)) continue;
 
-                    var sameRoute = requestsInPool.Any() &&
-                        requestsInPool.All(r => r.PickupZoneId == pickupZoneId && r.DropoffZoneId == dropoffZoneId);
+                var vehicle = await _uow.Vehicles.GetByIdAsync(pool.VehicleId);
+                if (vehicle == null) continue;
 
-                    if (!sameRoute) continue;
+                if (active.Sum(r => r.SeatsRequested) + seatsRequested <= vehicle.Capacity)
+                    return pool;
+            }
 
-                    var vehicle = await _uow.Vehicles.GetByIdAsync(pool.VehicleId);
-                    if (vehicle == null) continue;
+            // No pool to join, so start one with an online driver who has no active pool.
+            var onlineDrivers = await _uow.Drivers.GetOnlineDriversAsync();
+            foreach (var driver in onlineDrivers)
+            {
+                if ((await _uow.Pools.GetActivePoolsForDriverAsync(driver.Id)).Any()) continue;
 
-                    var occupiedSeats = requestsInPool
-                        .Where(r => r.Status is "Waiting" or "Matched" or "InProgress")
-                        .Sum(r => r.SeatsRequested);
-
-                    if (occupiedSeats + seatsRequested <= vehicle.Capacity)
-                    {
-                        await transaction.CommitAsync();
-                        return pool;
-                    }
-                }
-
-                // No compatible pool with room — find an online driver with an active vehicle to start one.
-                var onlineDrivers = await _uow.Drivers.GetOnlineDriversAsync();
-                var driver = onlineDrivers.FirstOrDefault();
-                if (driver == null)
-                    throw new InvalidOperationException("No online drivers available to start a pool.");
-
-                var driverVehicle = await _uow.Vehicles.GetActiveVehicleForDriverAsync(driver.Id);
-                if (driverVehicle == null || driverVehicle.Capacity < seatsRequested)
-                    throw new InvalidOperationException("No vehicle with sufficient capacity available.");
+                var vehicle = await _uow.Vehicles.GetActiveVehicleForDriverAsync(driver.Id);
+                if (vehicle == null || vehicle.Capacity < seatsRequested) continue;
 
                 var newPool = new Pool
                 {
                     Id = Guid.NewGuid(),
-                    VehicleId = driverVehicle.Id,
+                    VehicleId = vehicle.Id,
                     DriverId = driver.Id,
                     Status = "Waiting",
                     CreatedAt = DateTime.UtcNow
                 };
-
                 await _uow.Pools.AddAsync(newPool);
-                await _uow.SaveChangesAsync();
-                await transaction.CommitAsync();
                 return newPool;
             }
-            catch (DbUpdateConcurrencyException)
-            {
-                await transaction.RollbackAsync();
-                throw new InvalidOperationException("Pool capacity changed concurrently — please retry the request.");
-            }
-            catch
-            {
-                await transaction.RollbackAsync();
-                throw;
-            }
+
+            throw new InvalidOperationException(
+                "No seats or drivers are available for this pickup zone right now.");
         }
     }
 }
