@@ -1,3 +1,4 @@
+// AppLayer/Program.cs
 using BLL.Interfaces;
 using BLL.Services;
 using BLL.Settings;
@@ -8,6 +9,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
 using Microsoft.OpenApi;
+using AppLayer.Middleware;
+using BLL.Seeding;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -33,6 +36,10 @@ builder.Services.AddScoped<IRideStateMachineService, RideStateMachineService>();
 builder.Services.AddScoped<IPoolingService, PoolingService>();
 builder.Services.AddScoped<IRideRequestService, RideRequestService>();
 builder.Services.AddScoped<IWalletService, WalletService>();
+builder.Services.AddScoped<IPoolLifecycleService, PoolLifecycleService>();
+builder.Services.AddScoped<DbSeeder>();
+builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+builder.Services.AddProblemDetails();
 
 // --- Auth ---
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -76,6 +83,13 @@ builder.Services.AddSwaggerGen(c =>
 });
 
 var app = builder.Build();
+
+app.UseExceptionHandler();
+
+using (var scope = app.Services.CreateScope())
+{
+    await scope.ServiceProvider.GetRequiredService<DbSeeder>().SeedAsync();
+}
 
 if (app.Environment.IsDevelopment())
 {
