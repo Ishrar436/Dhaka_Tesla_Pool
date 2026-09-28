@@ -7,8 +7,8 @@ namespace BLL.Interfaces
 {
     public interface IDriverService
     {
-        Task GoOnlineAsync(Guid driverId);
-        Task GoOfflineAsync(Guid driverId);
-        Task<DriverDto?> GetProfileAsync(Guid driverId);
+        Task GoOnlineAsync(Guid userId);
+        Task GoOfflineAsync(Guid userId);
+        Task<DriverDto> GetProfileAsync(Guid userId);
     }
 }

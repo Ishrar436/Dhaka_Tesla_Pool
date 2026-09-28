@@ -7,7 +7,7 @@ namespace BLL.Interfaces
 {
     public interface IVehicleService
     {
-        Task<VehicleDto> RegisterVehicleAsync(Guid driverId, CreateVehicleDto dto);
-        Task<IEnumerable<VehicleDto>> GetByDriverAsync(Guid driverId);
+        Task<VehicleDto> RegisterVehicleAsync(Guid userId, CreateVehicleDto dto);
+        Task<IEnumerable<VehicleDto>> GetMineAsync(Guid userId);
     }
 }

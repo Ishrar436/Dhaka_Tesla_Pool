@@ -7,6 +7,6 @@ namespace BLL.Interfaces
 {
     public interface IPoolingService
     {
-        Task<Pool> FindOrCreatePoolAsync(Guid pickupZoneId, Guid dropoffZoneId, int seatsRequested);
+        Task<Pool> FindOrCreatePoolAsync(Guid pickupZoneId, int seatsRequested);
     }
 }
