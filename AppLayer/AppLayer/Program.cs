@@ -1,4 +1,3 @@
-// AppLayer/Program.cs
 using BLL.Interfaces;
 using BLL.Services;
 using BLL.Settings;
