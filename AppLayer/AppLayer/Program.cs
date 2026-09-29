@@ -11,6 +11,9 @@ using System.Text;
 using Microsoft.OpenApi;
 using AppLayer.Middleware;
 using BLL.Seeding;
+using AppLayer.Health;
+using AppLayer.Workers;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -37,9 +40,23 @@ builder.Services.AddScoped<IPoolingService, PoolingService>();
 builder.Services.AddScoped<IRideRequestService, RideRequestService>();
 builder.Services.AddScoped<IWalletService, WalletService>();
 builder.Services.AddScoped<IPoolLifecycleService, PoolLifecycleService>();
+builder.Services.AddScoped<IRideExpiryService, RideExpiryService>();
 builder.Services.AddScoped<DbSeeder>();
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 builder.Services.AddProblemDetails();
+
+// --- CORS (frontend origins come from config: Cors:AllowedOrigins) ---
+var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
+                     ?? new[] { "http://localhost:3000" };
+builder.Services.AddCors(options => options.AddPolicy("Frontend", policy =>
+    policy.WithOrigins(allowedOrigins).AllowAnyHeader().AllowAnyMethod()));
+
+// --- Health checks: /health/live = process is up, /health/ready = database reachable ---
+builder.Services.AddHealthChecks()
+    .AddCheck<DatabaseHealthCheck>("database", tags: new[] { "ready" });
+
+// --- Background work: expire ride requests nobody accepted ---
+builder.Services.AddHostedService<StaleRideExpiryWorker>();
 
 // --- Auth ---
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -97,9 +114,15 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
+// In Docker the API is served over plain http behind the compose network.
+if (!app.Configuration.GetValue<bool>("DisableHttpsRedirection"))
+    app.UseHttpsRedirection();
+
+app.UseCors("Frontend");
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false });
+app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = check => check.Tags.Contains("ready") });
 
 app.Run();
