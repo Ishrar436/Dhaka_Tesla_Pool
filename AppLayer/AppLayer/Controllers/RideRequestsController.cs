@@ -27,6 +27,10 @@ namespace AppLayer.Controllers
         public async Task<IActionResult> GetById(Guid id) =>
             Ok(await _rides.GetStatusAsync(User.GetUserId(), id));
 
+        [HttpGet("{id:guid}/timeline")]
+        public async Task<IActionResult> GetTimeline(Guid id) =>
+            Ok(await _rides.GetTimelineAsync(User.GetUserId(), id));
+
         [HttpGet("history")]
         public async Task<IActionResult> GetHistory() =>
             Ok(await _rides.GetHistoryAsync(User.GetUserId()));

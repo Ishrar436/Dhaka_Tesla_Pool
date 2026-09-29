@@ -1,7 +1,6 @@
 ﻿using AppLayer.Extensions;
 using BLL.Interfaces;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 
 namespace AppLayer.Controllers
@@ -19,6 +18,10 @@ namespace AppLayer.Controllers
         public async Task<IActionResult> GetMine() =>
             Ok(await _pools.GetMyPoolsAsync(User.GetUserId()));
 
+        [HttpGet("history")]
+        public async Task<IActionResult> GetHistory() =>
+            Ok(await _pools.GetHistoryAsync(User.GetUserId()));
+
         [HttpGet("{id:guid}")]
         public async Task<IActionResult> GetById(Guid id) =>
             Ok(await _pools.GetPoolAsync(User.GetUserId(), id));
@@ -27,6 +30,27 @@ namespace AppLayer.Controllers
         public async Task<IActionResult> Accept(Guid id)
         {
             await _pools.AcceptAsync(User.GetUserId(), id);
+            return NoContent();
+        }
+
+        [HttpPatch("{id:guid}/decline")]
+        public async Task<IActionResult> Decline(Guid id)
+        {
+            await _pools.DeclineAsync(User.GetUserId(), id);
+            return NoContent();
+        }
+
+        [HttpPatch("{id:guid}/cancel")]
+        public async Task<IActionResult> Cancel(Guid id)
+        {
+            await _pools.CancelAsync(User.GetUserId(), id);
+            return NoContent();
+        }
+
+        [HttpPatch("{id:guid}/arrive")]
+        public async Task<IActionResult> Arrive(Guid id)
+        {
+            await _pools.ArriveAsync(User.GetUserId(), id);
             return NoContent();
         }
 
