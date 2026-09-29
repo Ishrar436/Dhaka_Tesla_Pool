@@ -1,35 +1,41 @@
 ﻿using BLL.DTOs;
 using BLL.Interfaces;
 using DAL.EF.Tables;
-using System;
-using System.Collections.Generic;
-using System.Text;
 
 namespace BLL.Services
 {
     public class FareService : IFareService
     {
-        // Assumption (documented per PRD Section 17): flat rates in paisa.
-        // Base fare 3000 paisa (30 taka), 1500 paisa/km, 15% pool discount per extra rider sharing the pool.
+        // Assumptions (PRD Section 17), all money in integer paisa:
+        //   per seat  = base 3000 paisa (Tk 30) + 1500 paisa/km * straight-line distance
+        //   subtotal  = per seat * seats booked
+        //   discount  = 15% per seat already occupied in the pool, capped at 45%, on the subtotal
+        //   total     = subtotal - discount
+        // Rounding is half-away-from-zero so results can be checked by hand.
         private const long BaseFarePaisa = 3000;
         private const long RatePerKmPaisa = 1500;
-        private const decimal DiscountPerExtraPassenger = 0.15m;
+        private const decimal DiscountPerOccupiedSeat = 0.15m;
+        private const decimal MaxDiscount = 0.45m;
 
-        public FareBreakdownDto CalculateFare(Zone pickup, Zone dropoff, int currentPoolOccupants)
+        public FareBreakdownDto CalculateFare(Zone pickup, Zone dropoff, int seats, int occupiedSeats)
         {
+            if (seats < 1) throw new ArgumentException("At least one seat is required.");
+            if (occupiedSeats < 0) occupiedSeats = 0;
+
             var distanceKm = HaversineDistanceKm(pickup.Latitude, pickup.Longitude, dropoff.Latitude, dropoff.Longitude);
-            var distanceCharge = (long)Math.Round((decimal)distanceKm * RatePerKmPaisa);
+            var distanceChargePerSeat = (long)Math.Round((decimal)distanceKm * RatePerKmPaisa, MidpointRounding.AwayFromZero);
 
-            var subtotal = BaseFarePaisa + distanceCharge;
+            var baseTotal = BaseFarePaisa * seats;
+            var distanceTotal = distanceChargePerSeat * seats;
+            var subtotal = baseTotal + distanceTotal;
 
-            // currentPoolOccupants = passengers already sharing this pool before this one joins
-            var discountRate = Math.Min(currentPoolOccupants * DiscountPerExtraPassenger, 0.45m); // cap discount at 45%
-            var poolDiscount = (long)Math.Round(subtotal * discountRate);
+            var discountRate = Math.Min(occupiedSeats * DiscountPerOccupiedSeat, MaxDiscount);
+            var poolDiscount = (long)Math.Round(subtotal * discountRate, MidpointRounding.AwayFromZero);
 
             return new FareBreakdownDto
             {
-                BaseFarePaisa = BaseFarePaisa,
-                DistanceChargePaisa = distanceCharge,
+                BaseFarePaisa = baseTotal,
+                DistanceChargePaisa = distanceTotal,
                 PoolDiscountPaisa = poolDiscount,
                 TotalFarePaisa = subtotal - poolDiscount
             };

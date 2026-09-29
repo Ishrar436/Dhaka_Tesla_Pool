@@ -4,9 +4,6 @@ using BLL.Helpers;
 using BLL.Interfaces;
 using DAL.EF.Tables;
 using DAL.UnitOfWork;
-using System;
-using System.Collections.Generic;
-using System.Text;
 
 namespace BLL.Services
 {
@@ -14,17 +11,36 @@ namespace BLL.Services
     {
         private readonly IUnitOfWork _uow;
         private readonly IRideStateMachineService _stateMachine;
+        private readonly IPoolingService _pooling;
+        private readonly IFareService _fares;
 
-        public PoolLifecycleService(IUnitOfWork uow, IRideStateMachineService stateMachine)
+        public PoolLifecycleService(
+            IUnitOfWork uow,
+            IRideStateMachineService stateMachine,
+            IPoolingService pooling,
+            IFareService fares)
         {
             _uow = uow;
             _stateMachine = stateMachine;
+            _pooling = pooling;
+            _fares = fares;
         }
 
         public async Task<IEnumerable<PoolDto>> GetMyPoolsAsync(Guid driverUserId)
         {
             var driver = await GetDriverAsync(driverUserId);
             var pools = await _uow.Pools.GetActivePoolsForDriverAsync(driver.Id);
+
+            var result = new List<PoolDto>();
+            foreach (var pool in pools) result.Add(await MapAsync(pool));
+            return result;
+        }
+
+        // Finished pools (Completed or Cancelled), newest first.
+        public async Task<IEnumerable<PoolDto>> GetHistoryAsync(Guid driverUserId)
+        {
+            var driver = await GetDriverAsync(driverUserId);
+            var pools = await _uow.Pools.GetHistoryForDriverAsync(driver.Id);
 
             var result = new List<PoolDto>();
             foreach (var pool in pools) result.Add(await MapAsync(pool));
@@ -54,6 +70,73 @@ namespace BLL.Services
             await _uow.SaveChangesAsync();
         }
 
+        // Driver says no to a pool he hasn't accepted yet. Each passenger is moved to another
+        // driver's pool if one exists; otherwise that passenger's ride is cancelled with a reason.
+        public async Task DeclineAsync(Guid driverUserId, Guid poolId)
+        {
+            // Same lock as ride requests: we're moving passengers between pools.
+            await using var tx = await _uow.BeginTransactionAsync();
+            await _uow.AcquireMatchingLockAsync();
+
+            var (driver, pool) = await LoadOwnedPoolAsync(driverUserId, poolId);
+
+            if (pool.Status != "Waiting")
+                throw new InvalidOperationException($"This pool is {pool.Status} and can't be declined.");
+
+            var active = ActiveRides(pool);
+            if (active.Count == 0 || active.Any(r => r.Status != "Waiting"))
+                throw new InvalidOperationException(
+                    "Only a pool with unaccepted passengers can be declined. After accepting, use cancel.");
+
+            foreach (var ride in active)
+                await ReassignOrCancelAsync(ride, driver);
+
+            pool.Status = "Cancelled";
+            await _uow.SaveChangesAsync();
+            await tx.CommitAsync();
+        }
+
+        // Driver backs out after accepting but before the trip starts. Passengers are cancelled
+        // (they were already promised a car, so silently swapping drivers would be worse) and re-request.
+        public async Task CancelAsync(Guid driverUserId, Guid poolId)
+        {
+            var (_, pool) = await LoadOwnedPoolAsync(driverUserId, poolId);
+
+            if (pool.Status != "Waiting")
+                throw new InvalidOperationException("A pool can only be cancelled before the trip starts.");
+
+            var active = ActiveRides(pool);
+            if (active.Any(r => r.Status == "Waiting"))
+                throw new InvalidOperationException("This pool hasn't been accepted yet. Use decline instead.");
+
+            foreach (var ride in active)
+                await MoveAsync(ride, "Cancelled", "Cancelled by the driver");
+
+            pool.Status = "Cancelled";
+            await _uow.SaveChangesAsync();
+        }
+
+        public async Task ArriveAsync(Guid driverUserId, Guid poolId)
+        {
+            var (_, pool) = await LoadOwnedPoolAsync(driverUserId, poolId);
+
+            if (pool.Status != "Waiting")
+                throw new InvalidOperationException("Arrival can only be marked before the trip starts.");
+
+            var active = ActiveRides(pool);
+            if (active.Any(r => r.Status == "Waiting"))
+                throw new InvalidOperationException("Accept the waiting passengers before marking arrival.");
+
+            var matched = active.Where(r => r.Status == "Matched").ToList();
+            if (matched.Count == 0)
+                throw new InvalidOperationException("There is no one to mark as arrived.");
+
+            foreach (var ride in matched)
+                await MoveAsync(ride, "DriverArrived");
+
+            await _uow.SaveChangesAsync();
+        }
+
         public async Task StartAsync(Guid driverUserId, Guid poolId)
         {
             var (_, pool) = await LoadOwnedPoolAsync(driverUserId, poolId);
@@ -62,6 +145,8 @@ namespace BLL.Services
                 throw new InvalidOperationException($"This pool is {pool.Status} and can't be started.");
 
             var active = ActiveRides(pool);
+            if (active.Any(r => r.Status != "DriverArrived"))
+                throw new InvalidOperationException("Mark arrival before starting the trip.");
             if (active.Count == 0)
                 throw new InvalidOperationException("There are no passengers in this pool.");
             if (active.Any(r => r.Status == "Waiting"))
@@ -118,7 +203,7 @@ namespace BLL.Services
         private static List<RideRequest> ActiveRides(Pool pool) =>
             pool.RideRequests.Where(r => r.Status is not ("Cancelled" or "Completed")).ToList();
 
-        private async Task MoveAsync(RideRequest ride, string toStatus)
+        private async Task MoveAsync(RideRequest ride, string toStatus, string? reason = null)
         {
             _stateMachine.ValidateTransition(ride.Status, toStatus);
 
@@ -127,19 +212,57 @@ namespace BLL.Services
             if (toStatus is "Completed" or "Cancelled") ride.CompletedAt = DateTime.UtcNow;
 
             _uow.RideRequests.Update(ride);
-            await RideHistoryLog.AddAsync(_uow, ride.Id, from, toStatus);
+            await RideHistoryLog.AddAsync(_uow, ride.Id, from, toStatus, reason);
         }
 
-        // Wallet first: if the passenger's TeslaPay balance covers the fare it moves to the driver.
-        // If not, the fare is treated as paid in cash and no wallet changes.
+        // Saves after each passenger so the next pool search sees the move.
+        private async Task ReassignOrCancelAsync(RideRequest ride, Driver decliningDriver)
+        {
+            var target = await _pooling.TryFindOrCreatePoolAsync(ride.PickupZoneId, ride.SeatsRequested, decliningDriver.Id);
+
+            if (target == null)
+            {
+                await MoveAsync(ride, "Cancelled", "Driver declined and no other driver was available");
+                await _uow.SaveChangesAsync();
+                return;
+            }
+
+            var pickup = await _uow.Zones.GetByIdAsync(ride.PickupZoneId)
+                ?? throw new NotFoundException("Pickup zone not found.");
+            var dropoff = await _uow.Zones.GetByIdAsync(ride.DropoffZoneId)
+                ?? throw new NotFoundException("Dropoff zone not found.");
+
+            var occupiedSeats = target.RideRequests
+                .Where(r => r.Id != ride.Id && r.Status is not ("Cancelled" or "Completed"))
+                .Sum(r => r.SeatsRequested);
+            var fare = _fares.CalculateFare(pickup, dropoff, ride.SeatsRequested, occupiedSeats);
+
+            ride.PoolId = target.Id;
+            ride.EstimatedFarePaisa = fare.TotalFarePaisa;
+            _uow.RideRequests.Update(ride);
+            await RideHistoryLog.AddAsync(_uow, ride.Id, ride.Status, ride.Status,
+                "Driver declined; moved to another driver's pool and fare recalculated");
+            await _uow.SaveChangesAsync();
+        }
+
+        // Only Wallet rides move money. Cash rides are collected by the driver, so nothing changes here.
+        // If a Wallet ride can't be covered any more, it falls back to Cash and the ride's history says so.
         private async Task SettleFareAsync(RideRequest ride, Driver driver)
         {
+            if (ride.PaymentMethod != "Wallet") return;
+
             var fare = ride.FinalFarePaisa ?? ride.EstimatedFarePaisa;
             var passengerWallet = await _uow.Wallets.GetByUserIdAsync(ride.PassengerId);
             var driverWallet = await _uow.Wallets.GetByUserIdAsync(driver.UserId);
 
             if (passengerWallet == null || driverWallet == null || passengerWallet.BalancePaisa < fare)
+            {
+                ride.PaymentMethod = "Cash";
+                _uow.RideRequests.Update(ride);
+                await RideHistoryLog.AddAsync(_uow, ride.Id, "Completed", "Completed",
+                    "TeslaPay balance too low at completion; paid in cash");
                 return;
+            }
 
             passengerWallet.BalancePaisa -= fare;
             driverWallet.BalancePaisa += fare;
@@ -186,6 +309,7 @@ namespace BLL.Services
                     PickupZoneName = pickup?.Name ?? "",
                     DropoffZoneName = dropoff?.Name ?? "",
                     Status = r.Status,
+                    PaymentMethod = r.PaymentMethod,
                     FarePaisa = r.FinalFarePaisa ?? r.EstimatedFarePaisa
                 });
             }
@@ -197,6 +321,9 @@ namespace BLL.Services
                 VehicleName = vehicle?.Name ?? "",
                 Capacity = vehicle?.Capacity ?? 0,
                 SeatsTaken = ActiveRides(pool).Sum(r => r.SeatsRequested),
+                CreatedAt = pool.CreatedAt,
+                StartedAt = pool.StartedAt,
+                CompletedAt = pool.CompletedAt,
                 Passengers = passengers
             };
         }

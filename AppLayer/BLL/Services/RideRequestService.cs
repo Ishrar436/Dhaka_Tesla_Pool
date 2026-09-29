@@ -4,9 +4,6 @@ using BLL.Helpers;
 using BLL.Interfaces;
 using DAL.EF.Tables;
 using DAL.UnitOfWork;
-using System;
-using System.Collections.Generic;
-using System.Text;
 
 namespace BLL.Services
 {
@@ -44,10 +41,19 @@ namespace BLL.Services
             await using var tx = await _uow.BeginTransactionAsync();
             await _uow.AcquireMatchingLockAsync();
 
-            var pool = await _poolingService.FindOrCreatePoolAsync(dto.PickupZoneId, dto.SeatsRequested);
+            var pool = await _poolingService.FindOrCreatePoolAsync(dto.PickupZoneId, dto.SeatsRequested, null);
 
-            var occupants = pool.RideRequests.Count(r => r.Status is not ("Cancelled" or "Completed"));
-            var fare = _fareService.CalculateFare(pickupZone, dropoffZone, occupants);
+            var occupiedSeats = pool.RideRequests
+                .Where(r => r.Status is not ("Cancelled" or "Completed"))
+                .Sum(r => r.SeatsRequested);
+            var fare = _fareService.CalculateFare(pickupZone, dropoffZone, dto.SeatsRequested, occupiedSeats);
+
+            if (dto.PaymentMethod == "Wallet")
+            {
+                var wallet = await _uow.Wallets.GetByUserIdAsync(passengerId);
+                if (wallet == null || wallet.BalancePaisa < fare.TotalFarePaisa)
+                    throw new ArgumentException("Your TeslaPay balance doesn't cover this fare. Top up or choose cash.");
+            }
 
             var ride = new RideRequest
             {
@@ -57,6 +63,7 @@ namespace BLL.Services
                 DropoffZoneId = dto.DropoffZoneId,
                 PoolId = pool.Id,
                 SeatsRequested = dto.SeatsRequested,
+                PaymentMethod = dto.PaymentMethod,
                 Status = "Waiting",
                 EstimatedFarePaisa = fare.TotalFarePaisa,
                 RequestedAt = DateTime.UtcNow
@@ -96,6 +103,25 @@ namespace BLL.Services
             return result;
         }
 
+        // Full audit trail of one ride: every status change, when, and why. Passenger sees only their own.
+        public async Task<IEnumerable<RideTimelineEntryDto>> GetTimelineAsync(Guid passengerId, Guid rideRequestId)
+        {
+            var ride = await _uow.RideRequests.GetByIdAsync(rideRequestId)
+                ?? throw new NotFoundException("Ride request not found.");
+
+            if (ride.PassengerId != passengerId)
+                throw new ForbiddenException("This ride belongs to another passenger.");
+
+            var entries = await _uow.RideStatusHistories.GetByRideRequestIdAsync(rideRequestId);
+            return entries.Select(h => new RideTimelineEntryDto
+            {
+                FromStatus = h.FromStatus,
+                ToStatus = h.ToStatus,
+                ChangedAt = h.ChangedAt,
+                Reason = h.Reason
+            }).ToList();
+        }
+
         public async Task CancelAsync(Guid passengerId, Guid rideRequestId)
         {
             var ride = await _uow.RideRequests.GetByIdAsync(rideRequestId)
@@ -113,7 +139,7 @@ namespace BLL.Services
             ride.Status = "Cancelled";
             ride.CompletedAt = DateTime.UtcNow;
             _uow.RideRequests.Update(ride);
-            await RideHistoryLog.AddAsync(_uow, ride.Id, oldStatus, "Cancelled");
+            await RideHistoryLog.AddAsync(_uow, ride.Id, oldStatus, "Cancelled", "Cancelled by the passenger");
 
             // If nobody is left in the pool, close it so the driver is free again.
             if (ride.PoolId != null)
@@ -136,6 +162,8 @@ namespace BLL.Services
             PickupZoneName = pickupZoneName,
             DropoffZoneName = dropoffZoneName,
             PoolId = r.PoolId,
+            Seats = r.SeatsRequested,
+            PaymentMethod = r.PaymentMethod,
             Status = r.Status,
             EstimatedFarePaisa = r.EstimatedFarePaisa,
             FinalFarePaisa = r.FinalFarePaisa,

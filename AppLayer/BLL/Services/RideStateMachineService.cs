@@ -10,7 +10,8 @@ namespace BLL.Services
         private static readonly Dictionary<string, string[]> AllowedTransitions = new()
         {
             ["Waiting"] = new[] { "Matched", "Cancelled" },
-            ["Matched"] = new[] { "InProgress", "Cancelled" },
+            ["Matched"] = new[] { "DriverArrived", "Cancelled" },
+            ["DriverArrived"] = new[] { "InProgress", "Cancelled" },
             ["InProgress"] = new[] { "Completed", "Cancelled" },
             ["Completed"] = Array.Empty<string>(),
             ["Cancelled"] = Array.Empty<string>()
