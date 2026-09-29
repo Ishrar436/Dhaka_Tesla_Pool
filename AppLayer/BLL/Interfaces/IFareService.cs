@@ -1,13 +1,11 @@
 ﻿using BLL.DTOs;
 using DAL.EF.Tables;
-using System;
-using System.Collections.Generic;
-using System.Text;
 
 namespace BLL.Interfaces
 {
     public interface IFareService
     {
-        FareBreakdownDto CalculateFare(Zone pickup, Zone dropoff, int currentPoolOccupants);
+        // occupiedSeats = seats already taken in the pool before this booking joins.
+        FareBreakdownDto CalculateFare(Zone pickup, Zone dropoff, int seats, int occupiedSeats);
     }
 }

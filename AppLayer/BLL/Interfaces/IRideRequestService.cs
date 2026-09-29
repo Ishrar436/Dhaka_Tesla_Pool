@@ -1,7 +1,4 @@
 ﻿using BLL.DTOs;
-using System;
-using System.Collections.Generic;
-using System.Text;
 
 namespace BLL.Interfaces
 {
@@ -10,6 +7,7 @@ namespace BLL.Interfaces
         Task<RideRequestDto> CreateRideRequestAsync(Guid passengerId, CreateRideRequestDto dto);
         Task<RideRequestDto> GetStatusAsync(Guid passengerId, Guid rideRequestId);
         Task<IEnumerable<RideRequestDto>> GetHistoryAsync(Guid passengerId);
+        Task<IEnumerable<RideTimelineEntryDto>> GetTimelineAsync(Guid passengerId, Guid rideRequestId);
         Task CancelAsync(Guid passengerId, Guid rideRequestId);
     }
 }
